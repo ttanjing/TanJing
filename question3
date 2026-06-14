@@ -1,0 +1,91 @@
+
+use axum::{
+    extract::State,
+    response::Html,
+    routing::get,
+    Router,
+};
+
+use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
+
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
+
+type SharedTemp = Arc<Mutex<String>>;
+
+async fn dashboard(
+    State(temp): State<SharedTemp>,
+) -> Html<String> {
+    let value = temp.lock().unwrap().clone();
+
+    Html(format!(
+        r#"
+        <html>
+        <head>
+            <meta http-equiv="refresh" content="2">
+            <title>Temperature Dashboard</title>
+        </head>
+        <body>
+            <h1>Temperature Dashboard</h1>
+            <h2>{} °C</h2>
+        </body>
+        </html>
+        "#,
+        value
+    ))
+}
+
+#[tokio::main]
+async fn main() {
+    let latest_temp =
+        Arc::new(Mutex::new(String::from("Waiting...")));
+
+    let mqtt_temp = latest_temp.clone();
+
+    tokio::spawn(async move {
+        let mqttoptions =
+            MqttOptions::new("dashboard", "localhost", 1883);
+
+        let (client, mut eventloop) =
+            AsyncClient::new(mqttoptions, 10);
+
+        client
+            .subscribe(
+                "sensor/temperature",
+                QoS::AtMostOnce,
+            )
+            .await
+            .unwrap();
+
+        loop {
+            let event = eventloop.poll().await.unwrap();
+
+            if let Event::Incoming(Incoming::Publish(p)) = event {
+                let temp =
+                    String::from_utf8_lossy(&p.payload).to_string();
+
+                *mqtt_temp.lock().unwrap() = temp;
+            }
+        }
+    });
+
+    let app = Router::new()
+        .route("/", get(dashboard))
+        .with_state(latest_temp);
+
+    let addr =
+        SocketAddr::from(([127, 0, 0, 1], 3000));
+
+    println!("Dashboard: http://{}", addr);
+
+    let listener =
+        tokio::net::TcpListener::bind(addr)
+            .await
+            .unwrap();
+
+    axum::serve(listener, app)
+        .await
+        .unwrap();
+}
