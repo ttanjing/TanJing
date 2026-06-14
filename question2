@@ -1,64 +1,40 @@
-use chrono::Local;
+
 use rand::Rng;
 use rumqttc::{AsyncClient, MqttOptions, QoS};
-use std::time::Duration;
+use tokio::time::{sleep, Duration};
 
-// MQTT 基础配置
-const BROKER: &str = "test.mosquitto.org";
-const PORT: u16 = 1883;
-const TOPIC: &str = "hcr/project2026/temperature";
-const CLIENT_ID: &str = "rust_temp_sensor";
-// 模拟温度范围 18.0 ~ 32.0 ℃
-const TEMP_MIN: f32 = 18.0;
-const TEMP_MAX: f32 = 32.0;
-// 上报间隔(秒)
-const PUSH_INTERVAL: u64 = 2;
+#[tokio::main]
+async fn main() {
+    let mqttoptions =
+        MqttOptions::new("sensor_simulator", "localhost", 1883);
 
-/// 温度数据结构体
-#[derive(Debug, serde::Serialize)]
-pub struct TempData {
-    pub temperature: f32,
-    pub timestamp: String,
-}
+    let (client, mut eventloop) =
+        AsyncClient::new(mqttoptions, 10);
 
-/// 【Endpoint】读取模拟传感器温度数据
-pub fn read_sim_temp() -> TempData {
-    let mut rng = rand::thread_rng();
-    let temp = rng.gen_range(TEMP_MIN..=TEMP_MAX);
-    let time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    TempData {
-        temperature: (temp * 100.0).round() / 100.0, // 保留2位小数
-        timestamp: time,
-    }
-}
-
-/// 传感器主逻辑：Outpoint 上报数据到 MQTT Broker
-pub async fn start_sensor() {
-    // MQTT 客户端配置
-    let mut mqtt_opts = MqttOptions::new(CLIENT_ID, BROKER, PORT);
-    mqtt_opts.set_keepalive(Duration::from_secs(60));
-
-    // 创建异步 MQTT 客户端
-    let (client, mut eventloop) = AsyncClient::new(mqtt_opts, 10);
-    println!("传感器已连接 MQTT Broker");
-
-    // 后台处理 MQTT 事件
     tokio::spawn(async move {
-        while eventloop.poll().await.is_ok() {}
+        loop {
+            let _ = eventloop.poll().await;
+        }
     });
 
-    // 循环采集并发布数据（Outpoint）
     loop {
-        let data = read_sim_temp();
-        let payload = serde_json::to_string(&data).unwrap();
-        println!("上报温度数据: {:?}", data);
+        let temperature: f32 =
+            rand::thread_rng().gen_range(20.0..35.0);
 
-        // 发布数据到 Broker (Outpoint 核心逻辑)
+        let payload = format!("{:.2}", temperature);
+
         client
-            .publish(TOPIC, QoS::AtMostOnce, false, payload)
+            .publish(
+                "sensor/temperature",
+                QoS::AtMostOnce,
+                false,
+                payload.clone(),
+            )
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(PUSH_INTERVAL)).await;
+        println!("Published: {} °C", payload);
+
+        sleep(Duration::from_secs(2)).await;
     }
 }
